@@ -78,8 +78,6 @@ class GiftSubscriptionActivity : BaseActivity() {
             selectedSubscriptionSku?.let { sku -> purchaseSubscription(sku) }
         }
 
-        binding.giftSubscriptionContainer.isVisible = appConfigManager.enableGiftOneGetOne()
-
         compositeSubscription.add(socialRepository.getMember(giftedUsername ?: giftedUserID).subscribe({
             binding.avatarView.setAvatar(it)
             binding.displayNameTextView.username = it.profile?.name
@@ -88,6 +86,12 @@ class GiftSubscriptionActivity : BaseActivity() {
             giftedUserID = it.id
             giftedUsername = it.username
         }, RxErrorHandler.handleEmptyError()))
+
+        if (appConfigManager.activePromo()?.identifier == "g1g1") {
+            binding.giftSubscriptionContainer.visibility = View.VISIBLE
+        } else {
+            binding.giftSubscriptionContainer.visibility = View.GONE
+        }
     }
 
     override fun onStart() {
@@ -200,7 +204,7 @@ class GiftSubscriptionActivity : BaseActivity() {
     }
 
     private fun displayConfirmationDialog() {
-        val message = getString(if (appConfigManager.enableGiftOneGetOne()){
+        val message = getString(if (appConfigManager.activePromo()?.identifier == "g1g1") {
             R.string.gift_confirmation_text_sub_g1g1
         } else {
             R.string.gift_confirmation_text_sub

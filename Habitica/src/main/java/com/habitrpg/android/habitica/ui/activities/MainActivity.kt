@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -20,10 +21,13 @@ import android.widget.TextView
 import androidx.appcompat.app.ActionBarDrawerToggle
 import androidx.core.content.FileProvider
 import androidx.core.content.edit
+import androidx.core.os.bundleOf
 import androidx.drawerlayout.widget.DrawerLayout
 import androidx.lifecycle.ViewModelProvider
+import androidx.navigation.NavDeepLinkBuilder
 import androidx.navigation.NavDestination
 import androidx.navigation.findNavController
+import androidx.navigation.fragment.NavHostFragment
 import com.facebook.drawee.view.SimpleDraweeView
 import com.google.firebase.analytics.FirebaseAnalytics
 import com.google.firebase.perf.FirebasePerformance
@@ -51,12 +55,14 @@ import com.habitrpg.android.habitica.models.notifications.ChallengeWonData
 import com.habitrpg.android.habitica.models.notifications.LoginIncentiveData
 import com.habitrpg.android.habitica.models.responses.MaintenanceResponse
 import com.habitrpg.android.habitica.models.responses.TaskScoringResult
+import com.habitrpg.android.habitica.models.tasks.Task
 import com.habitrpg.android.habitica.models.user.User
 import com.habitrpg.android.habitica.proxy.CrashlyticsProxy
 import com.habitrpg.android.habitica.ui.AvatarView
 import com.habitrpg.android.habitica.ui.AvatarWithBarsViewModel
 import com.habitrpg.android.habitica.ui.TutorialView
 import com.habitrpg.android.habitica.ui.fragments.NavigationDrawerFragment
+import com.habitrpg.android.habitica.ui.fragments.tasks.TasksFragment
 import com.habitrpg.android.habitica.ui.helpers.DataBindingUtils
 import com.habitrpg.android.habitica.ui.viewmodels.NotificationsViewModel
 import com.habitrpg.android.habitica.ui.views.AdventureGuideDrawerArrowDrawable
@@ -88,6 +94,7 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
+    private var launchScreen: String? = null
     private lateinit var drawerIcon: AdventureGuideDrawerArrowDrawable
 
     @Inject
@@ -139,7 +146,7 @@ open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
     var drawerToggle: ActionBarDrawerToggle? = null
     private var resumeFromActivity = false
     private var userQuestStatus = UserQuestStatus.NO_QUEST
-    private var lastNotificationOpen: Int? = null
+    private var lastNotificationOpen: Long? = null
 
     val userID: String
         get() = user?.id ?: ""
@@ -223,6 +230,7 @@ open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
             }
 
             override fun onDrawerOpened(drawerView: View) {
+                hideKeyboard()
                 val modernHeaderStyle = sharedPreferences.getBoolean("modern_header_style", true)
                 if (!isUsingNightModeResources() && modernHeaderStyle) {
                     window.updateStatusBarColor(getThemeColor(R.attr.colorPrimaryDark), false)
@@ -247,11 +255,6 @@ open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
 
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         supportActionBar?.setHomeButtonEnabled(true)
-
-        val navigationController = findNavController(R.id.nav_host_fragment)
-        navigationController.addOnDestinationChangedListener { _, destination, arguments ->
-            updateToolbarTitle(destination, arguments)
-        }
         setupNotifications()
         setupBottomnavigationLayoutListener()
 
@@ -296,6 +299,7 @@ open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
     }
 
     override fun onSupportNavigateUp(): Boolean {
+        hideKeyboard()
         onBackPressed()
         return true
     }
@@ -326,6 +330,8 @@ open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
         super.onPostCreate(savedInstanceState)
         // Sync the toggle state after onRestoreInstanceState has occurred.
         drawerToggle?.syncState()
+
+        launchScreen = sharedPreferences.getString("launch_screen", "")
     }
 
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
@@ -351,6 +357,20 @@ open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
     override fun onResume() {
         super.onResume()
 
+        val navHostFragment = supportFragmentManager.findFragmentById(R.id.nav_host_fragment) as NavHostFragment
+        val navigationController = navHostFragment.navController
+        MainNavigationController.setup(navigationController)
+        navigationController.addOnDestinationChangedListener { _, destination, arguments -> updateToolbarTitle(destination, arguments) }
+
+        when (launchScreen) {
+            "/party" -> {
+                if (user == null || user?.party?.id != null) {
+                    MainNavigationController.navigate(R.id.partyFragment)
+                }
+            }
+        }
+        launchScreen = null
+
         if(!resumeFromActivity){
             retrieveUser()
             this.checkMaintenance()
@@ -363,21 +383,19 @@ open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
             putBoolean("preventDailyReminder", false)
         }
 
-        if (intent.hasExtra("notificationIdentifier") && lastNotificationOpen != intent.getIntExtra("notificationTimeStamp", 0)) {
-            lastNotificationOpen = intent.getIntExtra("notificationTimeStamp", 0)
+        if (intent.hasExtra("notificationIdentifier") && lastNotificationOpen != intent.getLongExtra("notificationTimeStamp", 0)) {
+            lastNotificationOpen = intent.getLongExtra("notificationTimeStamp", 0)
             val identifier = intent.getStringExtra("notificationIdentifier") ?: ""
             val additionalData = HashMap<String, Any>()
             additionalData["identifier"] = identifier
             AmplitudeManager.sendEvent("open notification", AmplitudeManager.EVENT_CATEGORY_BEHAVIOUR, AmplitudeManager.EVENT_HITTYPE_EVENT, additionalData)
             retrieveUser(true)
-            NotificationOpenHandler.handleOpenedByNotification(identifier, intent, user)
+            NotificationOpenHandler.handleOpenedByNotification(identifier, intent)
         }
 
         launchTrace?.stop()
         launchTrace = null
 
-        val navigationController = findNavController(R.id.nav_host_fragment)
-        MainNavigationController.setup(navigationController)
 
         if (binding.toolbarTitle.text?.isNotBlank() != true) {
             navigationController.currentDestination?.let { updateToolbarTitle(it, null) }
@@ -443,12 +461,12 @@ open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
                 compositeSubscription.add(inventoryRepository.getQuestContent(user?.party?.quest?.completed ?: "").firstElement().subscribe({
                     QuestCompletedDialog.showWithQuest(this, it)
 
-                    userRepository.updateUser(user, "party.quest.completed", "").subscribe({}, RxErrorHandler.handleEmptyError())
+                    userRepository.updateUser("party.quest.completed", "").subscribe({}, RxErrorHandler.handleEmptyError())
                 }, RxErrorHandler.handleEmptyError()))
             }
 
             if (user?.flags?.welcomed == false) {
-                compositeSubscription.add(userRepository.updateUser(user, "flags.welcomed", true).subscribe({}, RxErrorHandler.handleEmptyError()))
+                compositeSubscription.add(userRepository.updateUser("flags.welcomed", true).subscribe({}, RxErrorHandler.handleEmptyError()))
             }
 
             if (appConfigManager.enableAdventureGuide()) {
@@ -616,16 +634,18 @@ open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
 
     protected fun retrieveUser(forced: Boolean = false) {
         if (hostConfig.hasAuthentication()) {
-            compositeSubscription.add(this.userRepository.retrieveUser(true, forced)
-                    .doOnNext { user1 ->
-                        FirebaseAnalytics.getInstance(this).setUserProperty("has_party", if (user1.party?.id?.isNotEmpty() == true) "true" else "false")
-                        FirebaseAnalytics.getInstance(this).setUserProperty("is_subscribed", if (user1.isSubscribed) "true" else "false")
-                        pushNotificationManager.setUser(user1)
-                        pushNotificationManager.addPushDeviceUsingStoredToken()
-                    }
-                    .flatMap { contentRepository.retrieveContent(this,false) }
-                    .flatMap { contentRepository.retrieveWorldState(this) }
-                    .subscribe({ }, RxErrorHandler.handleEmptyError()))
+            compositeSubscription.add(
+                    contentRepository.retrieveWorldState(this)
+                            .flatMap { userRepository.retrieveUser(true, forced) }
+                            .doOnNext { user1 ->
+                                FirebaseAnalytics.getInstance(this).setUserProperty("has_party", if (user1.party?.id?.isNotEmpty() == true) "true" else "false")
+                                FirebaseAnalytics.getInstance(this).setUserProperty("is_subscribed", if (user1.isSubscribed) "true" else "false")
+                                pushNotificationManager.setUser(user1)
+                                pushNotificationManager.addPushDeviceUsingStoredToken()
+                            }
+                            .flatMap { userRepository.retrieveTeamPlans() }
+                            .flatMap { contentRepository.retrieveContent(this) }
+                            .subscribe({ }, RxErrorHandler.handleEmptyError()))
         }
     }
 
@@ -662,10 +682,7 @@ open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
     }
 
     override fun onTutorialCompleted(step: TutorialStep) {
-        val path = "flags.tutorial." + step.tutorialGroup + "." + step.identifier
-        val updateData = HashMap<String, Any>()
-        updateData[path] = true
-        compositeSubscription.add(userRepository.updateUser(user, updateData)
+        compositeSubscription.add(userRepository.updateUser("flags.tutorial." + step.tutorialGroup + "." + step.identifier, true)
                 .subscribe({ }, RxErrorHandler.handleEmptyError()))
         binding.overlayFrameLayout.removeView(this.activeTutorialView)
         this.removeActiveTutorialView()
@@ -808,7 +825,7 @@ open class MainActivity : BaseActivity(), TutorialView.OnTutorialReaction {
                     retrieveUser(true)
                     val dialog = AchievementDialog(this)
                     dialog.isLastOnboardingAchievement = event.isLastOnboardingAchievement
-                    dialog.setType(event.type)
+                    dialog.setType(event.type, event.message, event.text)
                     dialog.enqueue()
                     apiClient.readNotification(event.id)
                             .subscribe({ }, RxErrorHandler.handleEmptyError())

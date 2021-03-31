@@ -421,6 +421,10 @@ class ApiClientImpl//private OnHabitsAPIResult mResultListener;
         return apiService.postTaskDirection(id, direction).compose(configureApiCallObserver())
     }
 
+    override fun bulkScoreTasks(data: List<Map<String, String>>): Flowable<BulkTaskScoringData> {
+        return apiService.bulkScoreTasks(data).compose(configureApiCallObserver())
+    }
+
     override fun postTaskNewPosition(id: String, position: Int): Flowable<List<String>> {
         return apiService.postTaskNewPosition(id, position).compose(configureApiCallObserver())
     }
@@ -778,6 +782,14 @@ class ApiClientImpl//private OnHabitsAPIResult mResultListener;
 
     override fun transferGems(giftedID: String, amount: Int): Flowable<Void> {
         return apiService.transferGems(mapOf(Pair("toUserId", giftedID), Pair("gemAmount", amount))).compose(configureApiCallObserver())
+    }
+
+    override fun getTeamPlans(): Flowable<List<TeamPlan>> {
+        return apiService.getTeamPlans().compose(configureApiCallObserver())
+    }
+
+    override fun getTeamPlanTasks(teamID: String): Flowable<TaskList> {
+        return apiService.getTeamPlanTasks(teamID).compose(configureApiCallObserver())
     }
 
     override fun bulkAllocatePoints(strength: Int, intelligence: Int, constitution: Int, perception: Int): Flowable<Stats> {

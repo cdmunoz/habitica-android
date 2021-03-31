@@ -6,10 +6,6 @@
         <value>3000</value>
     </entry>
     <entry>
-        <key>enableGiftOneGetOne</key>
-        <value>false</value>
-    </entry>
-    <entry>
         <key>shopSpriteSuffix</key>
     </entry>
     <entry>
@@ -99,6 +95,10 @@
     <entry>
         <key>knownIssues</key>
         <value>[]</value>
+    </entry>
+    <entry>
+        <key>enableTeamBoards</key>
+        <value>false</value>
     </entry>
 </defaultsMap>
     <!-- END xml_defaults -->

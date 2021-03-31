@@ -49,30 +49,20 @@ class AvatarCustomizationFragment : BaseMainFragment<FragmentRecyclerviewBinding
                         userRepository.unlockPath(user, customization)
                                 .flatMap { userRepository.retrieveUser(false, true, true) }
                     } else {
-                        userRepository.useCustomization(user, customization.type ?: "", customization.category, customization.identifier ?: "")
+                        userRepository.useCustomization(customization.type ?: "", customization.category, customization.identifier ?: "")
                     }
                 }
                 .subscribe({ }, RxErrorHandler.handleEmptyError()))
         compositeSubscription.add(adapter.getUnlockCustomizationEvents()
                 .flatMap { customization ->
-                    val user = this.user
-                    if (user != null) {
                     userRepository.unlockPath(user, customization)
-                    } else {
-                        Flowable.empty()
-                    }
                 }
                 .flatMap { userRepository.retrieveUser(withTasks = false, forced = true) }
                 .flatMap { inventoryRepository.retrieveInAppRewards() }
                 .subscribe({ }, RxErrorHandler.handleEmptyError()))
         compositeSubscription.add(adapter.getUnlockSetEvents()
                 .flatMap { set ->
-                    val user = this.user
-                    if (user != null) {
-                        userRepository.unlockPath(user, set)
-                    } else {
-                        Flowable.empty()
-                    }
+                    userRepository.unlockPath(set)
                  }
                 .flatMap { userRepository.retrieveUser(withTasks = false, forced = true) }
                 .flatMap { inventoryRepository.retrieveInAppRewards() }
@@ -148,7 +138,7 @@ class AvatarCustomizationFragment : BaseMainFragment<FragmentRecyclerviewBinding
         this.updateActiveCustomization(user)
         if (adapter.customizationList.size != 0) {
             val ownedCustomizations = ArrayList<String>()
-            user.purchased?.customizations?.filter { it.type == this.type && it.purchased }?.mapTo(ownedCustomizations) { it.key ?: "" }
+            user.purchased?.customizations?.filter { it.type == this.type && it.purchased }?.mapTo(ownedCustomizations) { it.key + "_" + it.type + "_" + it.category }
             adapter.updateOwnership(ownedCustomizations)
         } else {
             this.loadCustomizations()

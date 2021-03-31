@@ -1,1 +1,1 @@
-Thanks for helping us testing!
+We’ve added the ability to select different default launch screens! Do you mainly use Dailies or find yourself constantly checking off To Do’s? Now you can set the app to automatically launch to either of those screens, and more! Go to Settings to explore the various launch screen options. We’ve also fixed a few bugs with views not updating automatically. Hope you enjoy this newest Habitica update!

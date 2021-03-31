@@ -80,6 +80,7 @@ interface ApiClient {
     fun getTask(id: String): Flowable<Task>
 
     fun postTaskDirection(id: String, direction: String): Flowable<TaskDirectionData>
+    fun bulkScoreTasks(data: List<Map<String, String>>): Flowable<BulkTaskScoringData>
 
     fun postTaskNewPosition(id: String, position: Int): Flowable<List<String>>
 
@@ -262,4 +263,6 @@ interface ApiClient {
     fun transferGems(giftedID: String, amount: Int): Flowable<Void>
     fun unlinkAllTasks(challengeID: String?, keepOption: String): Flowable<Void>
     fun blockMember(userID: String): Flowable<List<String>>
+    fun getTeamPlans(): Flowable<List<TeamPlan>>
+    fun getTeamPlanTasks(teamID: String): Flowable<TaskList>
 }

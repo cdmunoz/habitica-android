@@ -28,10 +28,9 @@ import com.habitrpg.android.habitica.helpers.TaskFilterHelper
 import com.habitrpg.android.habitica.models.responses.TaskDirection
 import com.habitrpg.android.habitica.models.responses.TaskScoringResult
 import com.habitrpg.android.habitica.models.tasks.Task
-import com.habitrpg.android.habitica.models.user.User
-import com.habitrpg.android.habitica.modules.AppModule
 import com.habitrpg.android.habitica.ui.activities.MainActivity
 import com.habitrpg.android.habitica.ui.activities.TaskFormActivity
+import com.habitrpg.android.habitica.ui.adapter.BaseRecyclerViewAdapter
 import com.habitrpg.android.habitica.ui.adapter.tasks.*
 import com.habitrpg.android.habitica.ui.fragments.BaseFragment
 import com.habitrpg.android.habitica.ui.helpers.SafeDefaultItemAnimator
@@ -40,22 +39,24 @@ import com.habitrpg.android.habitica.ui.views.HabiticaIconsHelper
 import com.habitrpg.android.habitica.ui.views.HabiticaSnackbar
 import com.habitrpg.android.habitica.ui.views.dialogs.HabiticaAlertDialog
 import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers
+import io.reactivex.rxjava3.disposables.CompositeDisposable
 import java.util.*
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
-import javax.inject.Named
 
 open class TaskRecyclerViewFragment : BaseFragment<FragmentRefreshRecyclerviewBinding>(), androidx.swiperefreshlayout.widget.SwipeRefreshLayout.OnRefreshListener {
+    internal var canEditTasks: Boolean = true
+    internal var canScoreTaks: Boolean = true
     override var binding: FragmentRefreshRecyclerviewBinding? = null
 
     override fun createBinding(inflater: LayoutInflater, container: ViewGroup?): FragmentRefreshRecyclerviewBinding {
         return FragmentRefreshRecyclerviewBinding.inflate(inflater, container, false)
     }
 
+    protected var recyclerSubscription: CompositeDisposable = CompositeDisposable()
     var recyclerAdapter: TaskRecyclerViewAdapter? = null
     var itemAnimator = SafeDefaultItemAnimator()
-    @field:[Inject Named(AppModule.NAMED_USER_ID)]
-    lateinit var userID: String
+    var ownerID: String = ""
     @Inject
     lateinit var apiClient: ApiClient
     @Inject
@@ -73,39 +74,59 @@ open class TaskRecyclerViewFragment : BaseFragment<FragmentRefreshRecyclerviewBi
 
     internal var layoutManager: RecyclerView.LayoutManager? = null
 
-    internal var classType: String? = null
-    internal var user: User? = null
+    internal var taskType: String = Task.TYPE_HABIT
     private var itemTouchCallback: ItemTouchHelper.Callback? = null
 
+    var refreshAction: ((() -> Unit) -> Unit)? = null
+
     internal val className: String
-        get() = this.classType ?: ""
+        get() = this.taskType
 
     // TODO needs a bit of cleanup
     private fun setInnerAdapter() {
-        val adapter: RecyclerView.Adapter<*>? = when (this.classType) {
-            Task.TYPE_HABIT -> {
-                HabitsRecyclerViewAdapter(null, true, R.layout.habit_item_card, taskFilterHelper)
-            }
-            Task.TYPE_DAILY -> {
-                DailiesRecyclerViewHolder(null, true, R.layout.daily_item_card, taskFilterHelper)
-            }
-            Task.TYPE_TODO -> {
-                TodosRecyclerViewAdapter(null, true, R.layout.todo_item_card, taskFilterHelper)
-            }
-            Task.TYPE_REWARD -> {
-                RewardsRecyclerViewAdapter(null, R.layout.reward_item_card, user)
-            }
+        if (binding?.recyclerView?.adapter != null && binding?.recyclerView?.adapter == recyclerAdapter && !recyclerSubscription.isDisposed) {
+            return
+        }
+        if (!recyclerSubscription.isDisposed) {
+            recyclerSubscription.dispose()
+        }
+        recyclerSubscription = CompositeDisposable()
+        val adapter: BaseRecyclerViewAdapter<*, *>? = when (this.taskType) {
+            Task.TYPE_HABIT -> HabitsRecyclerViewAdapter(null, true, R.layout.habit_item_card, taskFilterHelper)
+            Task.TYPE_DAILY -> DailiesRecyclerViewHolder(null, true, R.layout.daily_item_card, taskFilterHelper)
+            Task.TYPE_TODO -> TodosRecyclerViewAdapter(null, true, R.layout.todo_item_card, taskFilterHelper)
+            Task.TYPE_REWARD -> RewardsRecyclerViewAdapter(null, R.layout.reward_item_card)
             else -> null
         }
 
         recyclerAdapter = adapter as? TaskRecyclerViewAdapter
+        recyclerAdapter?.canScoreTasks = canScoreTaks
         binding?.recyclerView?.adapter = adapter
 
         context?.let { recyclerAdapter?.taskDisplayMode = configManager.taskDisplayMode(it) }
+
+        recyclerAdapter?.errorButtonEvents?.subscribe({
+            taskRepository.syncErroredTasks().subscribe({}, RxErrorHandler.handleEmptyError())
+        }, RxErrorHandler.handleEmptyError())?.let { recyclerSubscription.add(it) }
+        recyclerAdapter?.taskOpenEvents?.subscribeWithErrorHandler {
+            openTaskForm(it)
+        }?.let { recyclerSubscription.add(it) }
+        recyclerAdapter?.taskScoreEvents
+                ?.doOnNext { playSound(it.second) }
+                ?.subscribeWithErrorHandler { scoreTask(it.first, it.second) }?.let { recyclerSubscription.add(it) }
+        recyclerAdapter?.checklistItemScoreEvents
+                ?.flatMap { taskRepository.scoreChecklistItem(it.first.id ?: "", it.second.id ?: "")
+                }?.subscribeWithErrorHandler {}?.let { recyclerSubscription.add(it) }
+        recyclerAdapter?.brokenTaskEvents?.subscribeWithErrorHandler { showBrokenChallengeDialog(it) }?.let { recyclerSubscription.add(it) }
+
+        recyclerSubscription.add(taskRepository.getTasks(this.taskType, ownerID).subscribe({
+            this.recyclerAdapter?.updateUnfilteredData(it)
+            this.recyclerAdapter?.filter()
+        }, RxErrorHandler.handleEmptyError()))
     }
 
     private fun handleTaskResult(result: TaskScoringResult, value: Int) {
-        if (classType == Task.TYPE_REWARD) {
+        if (taskType == Task.TYPE_REWARD) {
             (activity as? MainActivity)?.let { activity ->
                 HabiticaSnackbar.showSnackbar(activity.snackbarContainer, null, getString(R.string.notification_purchase_reward),
                         BitmapDrawable(resources, HabiticaIconsHelper.imageOfGold()),
@@ -119,7 +140,7 @@ open class TaskRecyclerViewFragment : BaseFragment<FragmentRefreshRecyclerviewBi
     }
 
     private fun playSound(direction: TaskDirection) {
-        val soundName = when (classType) {
+        val soundName = when (taskType) {
             Task.TYPE_HABIT -> if (direction == TaskDirection.UP) SoundManager.SoundPlusHabit else SoundManager.SoundMinusHabit
             Task.TYPE_DAILY -> SoundManager.SoundDaily
             Task.TYPE_TODO -> SoundManager.SoundTodo
@@ -156,16 +177,19 @@ open class TaskRecyclerViewFragment : BaseFragment<FragmentRefreshRecyclerviewBi
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         context?.let { binding?.recyclerView?.setBackgroundColor(ContextCompat.getColor(it, R.color.content_background)) }
-        savedInstanceState?.let { this.classType = savedInstanceState.getString(CLASS_TYPE_KEY, "") }
+        savedInstanceState?.let { this.taskType = savedInstanceState.getString(CLASS_TYPE_KEY, "") }
 
-        when (classType) {
+        when (taskType) {
             Task.TYPE_TODO -> taskFilterHelper.setActiveFilter(Task.TYPE_TODO, Task.FILTER_ACTIVE)
             Task.TYPE_DAILY -> {
-                if (user?.isValid == true && user?.preferences?.dailyDueDefaultView == true) {
+                val user = (activity as? MainActivity)?.user
+                if (user?.isValid == true && user.preferences?.dailyDueDefaultView == true) {
                     taskFilterHelper.setActiveFilter(Task.TYPE_DAILY, Task.FILTER_ACTIVE)
                 }
             }
         }
+
+        recyclerAdapter?.filter()
 
         itemTouchCallback = object : ItemTouchHelper.Callback() {
             override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
@@ -216,7 +240,7 @@ open class TaskRecyclerViewFragment : BaseFragment<FragmentRefreshRecyclerviewBi
                 if (validTaskId != null) {
                     recyclerAdapter?.ignoreUpdates = true
                     compositeSubscription.add(taskRepository.updateTaskPosition(
-                            classType ?: "", validTaskId, viewHolder.adapterPosition
+                            taskType, validTaskId, viewHolder.adapterPosition
                     )
                             .delay(1, TimeUnit.SECONDS)
                             .observeOn(AndroidSchedulers.mainThread())
@@ -228,39 +252,14 @@ open class TaskRecyclerViewFragment : BaseFragment<FragmentRefreshRecyclerviewBi
         }
 
         binding?.recyclerView?.setScaledPadding(context, 0, 0, 0, 48)
-        binding?.recyclerView?.adapter = recyclerAdapter as? RecyclerView.Adapter<*>
-        recyclerAdapter?.filter()
 
         layoutManager = getLayoutManager(context)
         layoutManager?.isItemPrefetchEnabled = false
         binding?.recyclerView?.layoutManager = layoutManager
 
-        if (binding?.recyclerView?.adapter == null) {
-            this.setInnerAdapter()
-        }
+        this.setInnerAdapter()
 
         allowReordering()
-
-        if (this.classType != null) {
-            recyclerAdapter?.errorButtonEvents?.subscribe({
-                taskRepository.syncErroredTasks().subscribe({}, RxErrorHandler.handleEmptyError())
-            }, RxErrorHandler.handleEmptyError())?.let { compositeSubscription.add(it) }
-            recyclerAdapter?.taskOpenEvents?.subscribeWithErrorHandler {
-                openTaskForm(it)
-            }?.let { compositeSubscription.add(it) }
-            recyclerAdapter?.taskScoreEvents
-                    ?.doOnNext { playSound(it.second) }
-                    ?.subscribeWithErrorHandler { scoreTask(it.first, it.second) }?.let { compositeSubscription.add(it) }
-            recyclerAdapter?.checklistItemScoreEvents
-                    ?.flatMap { taskRepository.scoreChecklistItem(it.first.id ?: "", it.second.id ?: "")
-                    }?.subscribeWithErrorHandler {}?.let { compositeSubscription.add(it) }
-            recyclerAdapter?.brokenTaskEvents?.subscribeWithErrorHandler { showBrokenChallengeDialog(it) }?.let { compositeSubscription.add(it) }
-
-            compositeSubscription.add(taskRepository.getTasks(this.classType ?: "", userID).subscribe({
-                this.recyclerAdapter?.updateUnfilteredData(it)
-                this.recyclerAdapter?.filter()
-            }, RxErrorHandler.handleEmptyError()))
-        }
 
         val bottomPadding = ((binding?.recyclerView?.paddingBottom ?: 0) + TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 60f, resources.displayMetrics)).toInt()
         binding?.recyclerView?.setPadding(0, 0, 0, bottomPadding)
@@ -280,7 +279,7 @@ open class TaskRecyclerViewFragment : BaseFragment<FragmentRefreshRecyclerviewBi
         setEmptyLabels()
 
         if (Task.TYPE_REWARD == className) {
-            compositeSubscription.add(taskRepository.getTasks(this.className, userID)
+            compositeSubscription.add(taskRepository.getTasks(this.className, ownerID)
                     .subscribe({ recyclerAdapter?.data = it }, RxErrorHandler.handleEmptyError()))
         }
     }
@@ -314,97 +313,103 @@ open class TaskRecyclerViewFragment : BaseFragment<FragmentRefreshRecyclerviewBi
     }
 
     private fun setEmptyLabels() {
-        if (this.classType != null) {
-            binding?.recyclerView?.setEmptyView(binding?.emptyView)
-            context?.let { binding?.emptyIconView?.setColorFilter(ContextCompat.getColor(it, R.color.text_dimmed), android.graphics.PorterDuff.Mode.MULTIPLY) }
-            if (taskFilterHelper.howMany(classType) > 0) {
-                when (this.classType) {
-                    Task.TYPE_HABIT -> {
-                        binding?.emptyIconView?.setImageResource(R.drawable.icon_habits)
-                        binding?.emptyViewTitle?.setText(R.string.empty_title_habits_filtered)
-                        binding?.emptyViewDescription?.setText(R.string.empty_description_habits_filtered)
-                    }
-                    Task.TYPE_DAILY -> {
-                        binding?.emptyIconView?.setImageResource(R.drawable.icon_dailies)
-                        binding?.emptyViewTitle?.setText(R.string.empty_title_dailies_filtered)
-                        binding?.emptyViewDescription?.setText(R.string.empty_description_dailies_filtered)
-                    }
-                    Task.TYPE_TODO -> {
-                        binding?.emptyIconView?.setImageResource(R.drawable.icon_todos)
-                        binding?.emptyViewTitle?.setText(R.string.empty_title_todos_filtered)
-                        binding?.emptyViewDescription?.setText(R.string.empty_description_todos_filtered)
-                    }
-                    Task.TYPE_REWARD -> {
-                        binding?.emptyIconView?.setImageResource(R.drawable.icon_rewards)
-                        binding?.emptyViewTitle?.setText(R.string.empty_title_rewards)
-                    }
+        binding?.recyclerView?.setEmptyView(binding?.emptyView)
+        context?.let { binding?.emptyIconView?.setColorFilter(ContextCompat.getColor(it, R.color.text_dimmed), android.graphics.PorterDuff.Mode.MULTIPLY) }
+        if (taskFilterHelper.howMany(taskType) > 0) {
+            when (this.taskType) {
+                Task.TYPE_HABIT -> {
+                    binding?.emptyIconView?.setImageResource(R.drawable.icon_habits)
+                    binding?.emptyViewTitle?.setText(R.string.empty_title_habits_filtered)
+                    binding?.emptyViewDescription?.setText(R.string.empty_description_habits_filtered)
                 }
-            } else {
-                when (this.classType) {
-                    Task.TYPE_HABIT -> {
-                        binding?.emptyIconView?.setImageResource(R.drawable.icon_habits)
-                        binding?.emptyViewTitle?.setText(R.string.empty_title_habits)
-                        binding?.emptyViewDescription?.setText(R.string.empty_description_habits)
-                    }
-                    Task.TYPE_DAILY -> {
-                        binding?.emptyIconView?.setImageResource(R.drawable.icon_dailies)
-                        binding?.emptyViewTitle?.setText(R.string.empty_title_dailies)
-                        binding?.emptyViewDescription?.setText(R.string.empty_description_dailies)
-                    }
-                    Task.TYPE_TODO -> {
-                        binding?.emptyIconView?.setImageResource(R.drawable.icon_todos)
-                        binding?.emptyViewTitle?.setText(R.string.empty_title_todos)
-                        binding?.emptyViewDescription?.setText(R.string.empty_description_todos)
-                    }
-                    Task.TYPE_REWARD -> {
-                        binding?.emptyIconView?.setImageResource(R.drawable.icon_rewards)
-                        binding?.emptyViewTitle?.setText(R.string.empty_title_rewards)
-                    }
+                Task.TYPE_DAILY -> {
+                    binding?.emptyIconView?.setImageResource(R.drawable.icon_dailies)
+                    binding?.emptyViewTitle?.setText(R.string.empty_title_dailies_filtered)
+                    binding?.emptyViewDescription?.setText(R.string.empty_description_dailies_filtered)
+                }
+                Task.TYPE_TODO -> {
+                    binding?.emptyIconView?.setImageResource(R.drawable.icon_todos)
+                    binding?.emptyViewTitle?.setText(R.string.empty_title_todos_filtered)
+                    binding?.emptyViewDescription?.setText(R.string.empty_description_todos_filtered)
+                }
+                Task.TYPE_REWARD -> {
+                    binding?.emptyIconView?.setImageResource(R.drawable.icon_rewards)
+                    binding?.emptyViewTitle?.setText(R.string.empty_title_rewards)
+                }
+            }
+        } else {
+            when (this.taskType) {
+                Task.TYPE_HABIT -> {
+                    binding?.emptyIconView?.setImageResource(R.drawable.icon_habits)
+                    binding?.emptyViewTitle?.setText(R.string.empty_title_habits)
+                    binding?.emptyViewDescription?.setText(R.string.empty_description_habits)
+                }
+                Task.TYPE_DAILY -> {
+                    binding?.emptyIconView?.setImageResource(R.drawable.icon_dailies)
+                    binding?.emptyViewTitle?.setText(R.string.empty_title_dailies)
+                    binding?.emptyViewDescription?.setText(R.string.empty_description_dailies)
+                }
+                Task.TYPE_TODO -> {
+                    binding?.emptyIconView?.setImageResource(R.drawable.icon_todos)
+                    binding?.emptyViewTitle?.setText(R.string.empty_title_todos)
+                    binding?.emptyViewDescription?.setText(R.string.empty_description_todos)
+                }
+                Task.TYPE_REWARD -> {
+                    binding?.emptyIconView?.setImageResource(R.drawable.icon_rewards)
+                    binding?.emptyViewTitle?.setText(R.string.empty_title_rewards)
                 }
             }
         }
     }
 
     private fun scoreTask(task: Task, direction: TaskDirection) {
-        compositeSubscription.add(taskRepository.taskChecked(user, task, direction == TaskDirection.UP, false) { result ->
+        compositeSubscription.add(taskRepository.taskChecked(null, task, direction == TaskDirection.UP, false) { result ->
             handleTaskResult(result, task.value.toInt())
         }.subscribeWithErrorHandler {})
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        outState.putString(CLASS_TYPE_KEY, this.classType)
+        outState.putString(CLASS_TYPE_KEY, this.taskType)
     }
 
     override val displayedClassName: String?
-        get() = this.classType + super.displayedClassName
+        get() = this.taskType + super.displayedClassName
 
     override fun onRefresh() {
         binding?.refreshLayout?.isRefreshing = true
-        compositeSubscription.add(userRepository.retrieveUser(true, true)
-                .doOnTerminate {
-                    binding?.refreshLayout?.isRefreshing = false
-                }.subscribe({ }, RxErrorHandler.handleEmptyError()))
+        refreshAction?.invoke {
+            binding?.refreshLayout?.isRefreshing = false
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (binding?.recyclerView?.adapter == null || recyclerAdapter == null) {
+            setInnerAdapter()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         context?.let { recyclerAdapter?.taskDisplayMode = configManager.taskDisplayMode(it) }
+        setInnerAdapter()
+        recyclerAdapter?.filter()
     }
 
     fun setActiveFilter(activeFilter: String) {
-        taskFilterHelper.setActiveFilter(classType ?: "", activeFilter)
+        taskFilterHelper.setActiveFilter(taskType, activeFilter)
         recyclerAdapter?.filter()
 
         setEmptyLabels()
 
         if (activeFilter == Task.FILTER_COMPLETED) {
-            compositeSubscription.add(taskRepository.retrieveCompletedTodos(userID).subscribe({}, RxErrorHandler.handleEmptyError()))
+            compositeSubscription.add(taskRepository.retrieveCompletedTodos(ownerID).subscribe({}, RxErrorHandler.handleEmptyError()))
         }
     }
 
     private fun openTaskForm(task: Task) {
-        if (Date().time - (TasksFragment.lastTaskFormOpen?.time ?: 0) < 2000 || !task.isValid) {
+        if (Date().time - (TasksFragment.lastTaskFormOpen?.time ?: 0) < 2000 || !task.isValid || !canEditTasks) {
             return
         }
 
@@ -424,14 +429,13 @@ open class TaskRecyclerViewFragment : BaseFragment<FragmentRefreshRecyclerviewBi
     companion object {
         private const val CLASS_TYPE_KEY = "CLASS_TYPE_KEY"
 
-        fun newInstance(context: Context?, user: User?, classType: String): TaskRecyclerViewFragment {
+        fun newInstance(context: Context?, classType: String): TaskRecyclerViewFragment {
             val fragment = TaskRecyclerViewFragment()
             fragment.retainInstance = true
-            fragment.user = user
-            fragment.classType = classType
+            fragment.taskType = classType
             var tutorialTexts: List<String>? = null
             if (context != null) {
-                when (fragment.classType) {
+                when (fragment.taskType) {
                     Task.TYPE_HABIT -> {
                         fragment.tutorialStepIdentifier = "habits"
                         tutorialTexts = listOf(context.getString(R.string.tutorial_overview), context.getString(R.string.tutorial_habits_1), context.getString(R.string.tutorial_habits_2), context.getString(R.string.tutorial_habits_3), context.getString(R.string.tutorial_habits_4))

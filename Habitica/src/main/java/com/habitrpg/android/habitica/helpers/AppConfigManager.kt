@@ -6,24 +6,30 @@ import com.google.firebase.remoteconfig.FirebaseRemoteConfig
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.habitrpg.android.habitica.BuildConfig
+import com.habitrpg.android.habitica.data.ContentRepository
+import com.habitrpg.android.habitica.models.WorldState
 import com.habitrpg.android.habitica.models.promotions.HabiticaPromotion
 import com.habitrpg.android.habitica.models.promotions.getHabiticaPromotionFromKey
 import java.util.*
 
-class AppConfigManager {
+class AppConfigManager(private val contentRepository: ContentRepository?) {
+
+    private var worldState: WorldState? = null
+
+    init {
+        contentRepository?.getWorldState()?.subscribe( {
+            worldState = it
+        }, RxErrorHandler.handleEmptyError())
+    }
 
     private val remoteConfig = FirebaseRemoteConfig.getInstance()
 
     fun shopSpriteSuffix(): String {
-        return remoteConfig.getString("shopSpriteSuffix")
+        return worldState?.npcImageSuffix ?: remoteConfig.getString("shopSpriteSuffix")
     }
 
     fun maxChatLength(): Long {
         return remoteConfig.getLong("maxChatLength")
-    }
-
-    fun enableGiftOneGetOne(): Boolean {
-        return remoteConfig.getBoolean("enableGiftOneGetOne")
     }
 
     fun spriteSubstitutions(): Map<String, Map<String, String>> {
@@ -63,10 +69,6 @@ class AppConfigManager {
         return remoteConfig.getBoolean("enableLocalTaskScoring")
     }
 
-    fun flipAddTaskBehaviour(): Boolean {
-        return remoteConfig.getBoolean("flipAddTaskBehaviour")
-    }
-
     fun insufficientGemPurchase(): Boolean {
         return remoteConfig.getBoolean("insufficientGemPurchase")
     }
@@ -104,15 +106,12 @@ class AppConfigManager {
         return remoteConfig.getBoolean("enableAdventureGuide")
     }
 
-    fun activePromo(context: Context): HabiticaPromotion? {
-        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
-        val key = preferences.getString("currentEvent", null)
-        if (key?.isNotBlank() == true) {
-            val startDateLong = preferences.getLong("currentEventStartDate", 0)
-            val startDate = if (startDateLong > 0) Date(startDateLong) else null
-            val endDateLong = preferences.getLong("currentEventEndDate", 0)
-            val endDate = if (endDateLong > 0) Date(endDateLong) else null
-            return getHabiticaPromotionFromKey(key, startDate, endDate)
+    fun activePromo(): HabiticaPromotion? {
+        for (event in worldState?.events ?: listOf(worldState?.currentEvent)) {
+            if (event == null) return null
+            if (event.promo != null) {
+                return getHabiticaPromotionFromKey(event.promo ?: "", event.start, event.end)
+            }
         }
         return null
     }
@@ -120,5 +119,9 @@ class AppConfigManager {
     fun knownIssues(): List<Map<String, String>> {
         val type = object : TypeToken<List<Map<String, String>>>() {}.type
         return Gson().fromJson(remoteConfig.getString("knownIssues"), type)
+    }
+
+    fun enableTeamBoards(): Boolean {
+        return remoteConfig.getBoolean("enableTeamBoards")
     }
 }
